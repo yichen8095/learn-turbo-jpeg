@@ -20,17 +20,17 @@ int main(int argc, char **argv) {
 int readJpegFile() {
     FILE *inFile = fopen("./test.jpg", "r");
     if (inFile == NULL) {
-        puts("Error open jpeg file");
+        perror("Error open jpeg file");
         return -1;
     }
 
     unsigned char fileHeader[2];
     if (fread(fileHeader, sizeof(fileHeader[0]), 2, inFile) != 2) {
-        puts("Error read file header");
+        perror("Error read file header");
         goto endFile;
     }
     if (fileHeader[0] != 0xFF || fileHeader[1] != 0xD8) {
-        puts("Error file header is not jpeg");
+        perror("Error file header is not jpeg");
         goto endFile;
     }
 
@@ -38,7 +38,7 @@ int readJpegFile() {
     if (fseek(inFile, 0, SEEK_END) != 0
         || (jpegFileSize = ftell(inFile)) < 1
         || fseek(inFile, 0, SEEK_SET) != 0) {
-        puts("Error get file size");
+        perror("Error get file size");
         goto endFile;
     }
 
@@ -46,11 +46,11 @@ int readJpegFile() {
 
     unsigned char *buffer = malloc(jpegFileSize);
     if (buffer == NULL) {
-        puts("Error in allocating buffer");
+        perror("Error in allocating buffer");
         goto endFile;
     }
     if (fread(buffer, sizeof(unsigned char), jpegFileSize, inFile) != jpegFileSize) {
-        puts("Error in reading file");
+        perror("Error in reading file");
         goto endBuffer;
     }
 
@@ -60,22 +60,15 @@ int readJpegFile() {
     int colorspace = 0;
     tjhandle handle = tjInitDecompress();
     if (handle == NULL) {
-        printf("Error init decompress: %s\n", tjGetErrorStr2(handle));
-        goto endHandle;
+        fprintf(stderr, "Error init decompress: %s\n", tjGetErrorStr2(handle));
+        goto endBuffer;
     }
     if (tjDecompressHeader3(handle, buffer, jpegFileSize, &width, &height, &subsam, &colorspace) == -1) {
-        printf("Error decompress header: %s\n", tjGetErrorStr2(handle));
+        fprintf(stderr, "Error decompress header: %s\n", tjGetErrorStr2(handle));
         goto endHandle;
     }
     printf("jpeg image width=%d, height=%d, subsmp=%d, colorspace=%d\n", width, height, subsam, colorspace);
-
-    tjDestroy(handle);
-    handle = NULL;
-    free(buffer);
-    buffer = NULL;
-    fclose(inFile);
-    inFile = NULL;
-    return 0;
+    goto bailout;
 
     endHandle:
     if (handle != NULL) {
@@ -98,6 +91,13 @@ int readJpegFile() {
         return -1;
     }
 
+    bailout:
+    tjDestroy(handle);
+    handle = NULL;
+    free(buffer);
+    buffer = NULL;
+    fclose(inFile);
+    inFile = NULL;
     return 0;
 }
 
@@ -155,6 +155,7 @@ int compressJpegFile() {
     int colorspace;
     if (tjDecompressHeader3(handle, buffer, jpegFileSize, &width, &height, &subsam, &colorspace) != 0) {
         fprintf(stderr, "Error decompress header: %s\n", tjGetErrorStr2(handle));
+        tjDestroy(handle);
         tjFree(buffer);
         return -1;
     }
@@ -163,16 +164,22 @@ int compressJpegFile() {
     int pixelFormat = TJPF_BGRX;
     unsigned char *rgbBuffer = tjAlloc(width * height * tjPixelSize[pixelFormat]);
     if (rgbBuffer == NULL) {
+        perror("Error allocate memory");
+        tjDestroy(handle);
         tjFree(buffer);
         return -1;
     }
     if (tjDecompress2(handle, buffer, jpegFileSize, rgbBuffer, width, 0, height, pixelFormat, TJFLAG_FASTDCT) != 0) {
         fprintf(stderr, "Error decompress: %s\n", tjGetErrorStr2(handle));
-        tjFree(buffer);
         tjFree(rgbBuffer);
+        tjDestroy(handle);
+        tjFree(buffer);
         return -1;
     }
     tjDestroy(handle);
+    handle = NULL;
+    tjFree(buffer);
+    buffer = NULL;
 
     printf("rgb buffer size=%d, component size is %d\n", width * height * tjPixelSize[pixelFormat],
            tjPixelSize[pixelFormat]);
@@ -180,7 +187,7 @@ int compressJpegFile() {
     handle = tjInitCompress();
     if (handle == NULL) {
         perror("Error init compress");
-        tjFree(buffer);
+        tjFree(rgbBuffer);
         return -1;
     }
     unsigned char *outBuffer = NULL;
@@ -188,29 +195,31 @@ int compressJpegFile() {
     if (tjCompress2(handle, rgbBuffer, width, 0, height, pixelFormat, &outBuffer, &outBufferSize, subsam, 40,
                     TJFLAG_ACCURATEDCT | TJFLAG_FASTDCT) != 0) {
         fprintf(stderr, "Error compress: %s\n", tjGetErrorStr2(handle));
-        tjFree(buffer);
+        tjFree(rgbBuffer);
         tjDestroy(handle);
         return -1;
     }
+    tjFree(rgbBuffer);
+    rgbBuffer = NULL;
     tjDestroy(handle);
+    handle = NULL;
 
     printf("out jpeg file: size=%ld\n", outBufferSize);
     FILE *outFile = fopen("out.jpg", "w");
     if (outFile == NULL) {
         perror("Error open out file");
         tjFree(outBuffer);
-        free(buffer);
         return -1;
     }
     if (fwrite(outBuffer, sizeof(unsigned char), outBufferSize, outFile) != outBufferSize) {
         perror("Error write out file");
-        tjFree(outBuffer);
-        tjFree(buffer);
         fclose(outFile);
+        tjFree(outBuffer);
         return -1;
     }
     puts("jpeg file compress success");
     fclose(outFile);
+    tjFree(outBuffer);
 
     return 0;
 }
